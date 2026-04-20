@@ -113,6 +113,14 @@ class Apparatus(AttributeGetSetMixin):
         self.reedHoles = []  # List of hole numbers (parallel to reedTimes)
         self.reedActions = []  # List of actions: 1=insert, 0=remove (parallel to reedTimes)
         self.reedSummary = []  # Per-hole summary: [{'hole': h, 'insertions': n, 'removals': m, 'duration': s}, ...]
+        self.reedCurrentStates = {}  # Live state per monitored hole: {hole: 0/1}
+        self.reedActiveHoles = []  # Live list of holes that are currently inserted/closed
+        self.reedNewInsertions = []  # Holes that changed to inserted in the latest update
+        self.reedNewRemovals = []  # Holes that changed to removed in the latest update
+        self.reedLatestEvent = None  # Most recent transition: {'time': t, 'hole': h, 'action': 0/1}
+        self.reedFrameTimes = []  # Per-frame timestamps for reed snapshots
+        self.reedFrameStates = []  # Per-frame snapshots of reedCurrentStates
+        self.reedFrameActiveHoles = []  # Per-frame snapshots of reedActiveHoles
         
         # Reed measurement state (internal tracking)
         self._reed_measuring = False
@@ -544,6 +552,14 @@ class Apparatus(AttributeGetSetMixin):
         self.reedHoles.clear()
         self.reedActions.clear()
         self.reedSummary.clear()
+        self.reedCurrentStates = {hole: 0 for hole in self._reed_monitored_holes}
+        self.reedActiveHoles = []
+        self.reedNewInsertions = []
+        self.reedNewRemovals = []
+        self.reedLatestEvent = None
+        self.reedFrameTimes = []
+        self.reedFrameStates = []
+        self.reedFrameActiveHoles = []
         
         # Initialize tracking for each monitored hole
         self._reed_last_states = {hole: 0 for hole in self._reed_monitored_holes}
@@ -627,6 +643,10 @@ class Apparatus(AttributeGetSetMixin):
         """
         if not self._reed_measuring:
             return
+
+        # Clear per-frame transition buffers before consuming new data.
+        self.reedNewInsertions = []
+        self.reedNewRemovals = []
         
         # Get all responses from device
         all_responses = self._device.getResponses()
@@ -639,12 +659,21 @@ class Apparatus(AttributeGetSetMixin):
             if response.msg_type != DATA_REED:
                 continue
             
+            reed_holes = None
             if hasattr(response, 'reed_holes') and response.reed_holes is not None:
+                reed_holes = response.reed_holes
+            elif hasattr(response, 'reed_bits') and response.reed_bits is not None:
+                reed_holes = {
+                    hole: (int(response.reed_bits) >> hole) & 1
+                    for hole in self._reed_monitored_holes
+                }
+
+            if reed_holes is not None:
                 timestamp = response.t
                 
                 # Check each monitored hole for state changes
                 for hole in self._reed_monitored_holes:
-                    new_state = response.reed_holes.get(hole, 0)
+                    new_state = reed_holes.get(hole, 0)
                     old_state = self._reed_last_states[hole]
                     
                     # Detect state change
@@ -654,6 +683,7 @@ class Apparatus(AttributeGetSetMixin):
                             action = 1
                             self._reed_insertion_counts[hole] += 1
                             self._reed_last_insert_time[hole] = timestamp
+                            self.reedNewInsertions.append(hole)
                         else:
                             # Removal detected
                             action = 0
@@ -663,17 +693,36 @@ class Apparatus(AttributeGetSetMixin):
                                 duration = timestamp - self._reed_last_insert_time[hole]
                                 self._reed_active_durations[hole] += duration
                                 self._reed_last_insert_time[hole] = None
+                            self.reedNewRemovals.append(hole)
                         
                         # Record event in parallel lists
                         self.reedTimes.append(timestamp)
                         self.reedHoles.append(hole)
                         self.reedActions.append(action)
+                        self.reedLatestEvent = {
+                            'time': timestamp,
+                            'hole': hole,
+                            'action': action,
+                        }
                         
                         # Update last known state
                         self._reed_last_states[hole] = new_state
+                        self.reedCurrentStates[hole] = new_state
+
+                self.reedActiveHoles = [
+                    hole for hole in self._reed_monitored_holes
+                    if self._reed_last_states.get(hole, 0) == 1
+                ]
         
         # Update the response counter
         self._reed_start_response_count = len(all_responses)
+
+        # Snapshot the current state on every poll so the frame-by-frame history
+        # can be reconstructed later, even if no transition occurred in this frame.
+        snapshot_time = core.getTime()
+        self.reedFrameTimes.append(snapshot_time)
+        self.reedFrameStates.append(self.reedCurrentStates.copy())
+        self.reedFrameActiveHoles.append(list(self.reedActiveHoles))
 
     def updateReedMeasurement(self):
         """
