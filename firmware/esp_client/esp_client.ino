@@ -977,10 +977,10 @@ static void handle_reed_stream(void) {
   next_reed_sample_us = now_us + reed_sample_period_us;
 
   uint32_t reed_val = read_reed();
-  if (reed_val != last_reed_value) {
-    send_reed_data(reed_val);
-    last_reed_value = reed_val;
-  }
+  // Stream the current reed state on every sampling tick (not only on changes).
+  // This makes host-side reconstruction robust against occasional dropped frames.
+  send_reed_data(reed_val);
+  last_reed_value = reed_val;
 }
 
 static void send_hall_data(uint8_t hole, uint8_t plugged, uint32_t reaction_us, int16_t x, int16_t y, int16_t z) {
