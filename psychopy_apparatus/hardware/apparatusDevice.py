@@ -396,12 +396,12 @@ class ApparatusDevice(BaseResponseDevice, aliases=["apparatus"]):
                 return False
             responses = self._protocol.get_responses()
             
-            # Look for response with matching sequence number.
-            # IMPORTANT: do not remove responses from the shared protocol buffer here.
-            # Measurement collectors use list-length cursors over this same buffer;
-            # removing ACK/NACK entries would shift indices and can cause data drops.
+            # Look for response with matching sequence number
             for response in responses:
                 if response.seq == expected_seq and response.msg_type in (MSG_ACK, MSG_NACK):
+                    # Remove this response from the queue
+                    self._protocol._responses.remove(response)
+                    
                     if response.is_ack():
                         if self._debug:
                             logging.info(f"Apparatus RX: ACK for seq={expected_seq}")
@@ -571,7 +571,7 @@ class ApparatusDevice(BaseResponseDevice, aliases=["apparatus"]):
         Start streaming reed sensor measurements from the client.
         
         The client will sample reed switches at the specified rate and send DATA_REED
-        messages containing the current full reed state.
+        messages only when the state changes (at least one hole plugged/unplugged).
         
         Parameters
         ----------
