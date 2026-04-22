@@ -19,3 +19,10 @@ README.md
 README.html
 firmware/esp_server_experimental3_modular/README.md
 /.tmp_compare
+/.codex_tmp
+/.omx
+omx.cmd
+npx.cmd
+npm.cmd
+tools/codex.exe
+codex.cmd
